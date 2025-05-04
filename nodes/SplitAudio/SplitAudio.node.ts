@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import ffmpeg from 'fluent-ffmpeg';
 import {
 	IExecuteFunctions,
 	INodeExecutionData,
@@ -151,18 +152,59 @@ export class SplitAudio implements INodeType {
 				}
 
 				const binaryData = items[itemIndex].binary![binaryPropertyName];
-				const filePath = (binaryData.filePath ||
-					(this.getNodeParameter('filePath', itemIndex, '') as string)) as string;
+
+				// Get the path to the input file
+				let filePath = '';
+
+				// Check if file is stored in a temporary file already
+				if (
+					binaryData.fileName &&
+					binaryData.mimeType &&
+					binaryData.data === undefined &&
+					binaryData.filePath
+				) {
+					// If we have a file path, we can use that directly
+					filePath =
+						typeof binaryData.filePath === 'string'
+							? binaryData.filePath
+							: String(binaryData.filePath);
+				} else if (binaryData.data) {
+					// We need to write the base64 data to a temporary file
+					const tempPrefix = `n8n-audio-split-${Date.now()}-`;
+					const tempDir = os.tmpdir();
+					const tempFile = path.join(tempDir, `${tempPrefix}${binaryData.fileName || 'input.mp3'}`);
+
+					// Write buffer to file
+					const buffer = Buffer.from(binaryData.data, 'base64');
+					await fs.promises.writeFile(tempFile, buffer);
+					filePath = tempFile;
+				} else {
+					throw new NodeOperationError(
+						this.getNode(),
+						'No usable binary data found! The data must either be stored in a file or as base64 data.',
+						{ itemIndex },
+					);
+				}
 
 				if (!filePath) {
 					throw new NodeOperationError(
 						this.getNode(),
-						'No file path available! Make sure to use a node like "Read Binary File" first.',
+						'Could not determine file path! Make sure to use a node like "Read Binary File" first.',
 						{ itemIndex },
 					);
 				}
 
 				try {
+					// Track files to clean up at the end
+					const tempFilesToCleanup: string[] = [];
+					let shouldCleanupInputFile = false;
+
+					// If we created a temp file from binary data, we should clean it up
+					if (filePath && binaryData.data !== undefined) {
+						tempFilesToCleanup.push(filePath);
+						shouldCleanupInputFile = true;
+					}
+
 					// Create temp directory for output chunks
 					const tmpDir = path.join(os.tmpdir(), `n8n-split-audio-${Date.now()}`);
 					await fs.promises.mkdir(tmpDir, { recursive: true });
@@ -172,26 +214,45 @@ export class SplitAudio implements INodeType {
 					const fileBaseName = fileInfo.name;
 					const fileExtension = fileInfo.ext.toLowerCase();
 
+					this.logger.debug(`Splitting audio file: ${filePath}`);
+					this.logger.debug(`Output directory: ${tmpDir}`);
+					this.logger.debug(`File info: ${JSON.stringify(fileInfo)}`);
+
 					// Determine output extension
 					let outputExtension = fileExtension;
 					if (outputFormat !== 'same') {
 						outputExtension = `.${outputFormat}`;
 					}
 
-					// Get audio info
-					const { stdout: ffprobeOutput } = await execPromise(
-						`ffprobe -v error -show_entries format=duration,bit_rate -of json "${filePath}"`,
-					);
+					// Get audio info using ffprobe via fluent-ffmpeg
+					const getMediaInfo = () => {
+						return new Promise<{ duration: number; bitrate: number }>((resolve, reject) => {
+							ffmpeg.ffprobe(filePath, (err, metadata) => {
+								if (err) {
+									return reject(err);
+								}
 
-					const ffprobeData = JSON.parse(ffprobeOutput);
-					const duration = parseFloat(ffprobeData.format.duration);
-					let bitrate = parseInt(ffprobeData.format.bit_rate);
+								const duration = metadata.format.duration || 0;
+								let bitrate = metadata.format.bit_rate
+									? parseInt(String(metadata.format.bit_rate))
+									: 0;
 
-					// Fallback if bitrate not available
-					if (!bitrate) {
-						const { size } = await fs.promises.stat(filePath);
-						bitrate = Math.round((size * 8) / duration);
-					}
+								// Fallback if bitrate not available
+								if (!bitrate) {
+									try {
+										const size = fs.statSync(filePath).size;
+										bitrate = Math.round((size * 8) / duration);
+									} catch (e) {
+										return reject(e);
+									}
+								}
+
+								resolve({ duration, bitrate });
+							});
+						});
+					};
+
+					const { bitrate } = await getMediaInfo();
 
 					// Calculate chunk duration in seconds
 					const chunkSizeBytes = chunkSizeMB * 1024 * 1024;
@@ -208,9 +269,20 @@ export class SplitAudio implements INodeType {
 						`${fileBaseName}_${outputPrefix}_%03d${outputExtension}`,
 					);
 
-					// Split the file using FFmpeg segment feature
-					const ffmpegCmd = `ffmpeg -i "${filePath}" -f segment -segment_time ${chunkDurationSeconds} -reset_timestamps 1 -c copy "${outputPattern}"`;
-					await execPromise(ffmpegCmd);
+					// Split the file using fluent-ffmpeg
+					await new Promise<void>((resolve, reject) => {
+						ffmpeg(filePath)
+							.outputOptions([
+								`-f segment`,
+								`-segment_time ${chunkDurationSeconds}`,
+								`-reset_timestamps 1`,
+							])
+							.outputOption('-c copy')
+							.output(outputPattern)
+							.on('end', () => resolve())
+							.on('error', (err: Error) => reject(new Error(`FFmpeg error: ${err.message}`)))
+							.run();
+					});
 
 					// Read created chunks
 					const chunkFiles = (await fs.promises.readdir(tmpDir))
@@ -244,11 +316,34 @@ export class SplitAudio implements INodeType {
 						returnData.push(chunk);
 
 						// Clean up temp file
-						await fs.promises.unlink(chunkPath);
+						tempFilesToCleanup.push(chunkPath);
 					}
 
 					// Clean up temp directory
-					await fs.promises.rmdir(tmpDir);
+					tempFilesToCleanup.push(tmpDir);
+
+					// Cleanup all temporary files
+					for (const tempFile of tempFilesToCleanup) {
+						try {
+							const stats = await fs.promises.stat(tempFile);
+							if (stats.isDirectory()) {
+								await fs.promises.rmdir(tempFile, { recursive: true });
+							} else {
+								await fs.promises.unlink(tempFile);
+							}
+						} catch (cleanupError) {
+							this.logger.warn(`Failed to clean up temporary file: ${tempFile}`);
+						}
+					}
+
+					// Cleanup input file if necessary
+					if (shouldCleanupInputFile) {
+						try {
+							await fs.promises.unlink(filePath);
+						} catch (cleanupError) {
+							this.logger.warn(`Failed to clean up input file: ${filePath}`);
+						}
+					}
 				} catch (error) {
 					if (error instanceof Error) {
 						throw new NodeOperationError(

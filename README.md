@@ -1,45 +1,81 @@
-![Banner image](https://user-images.githubusercontent.com/10284570/173569848-c624317f-42b1-45a6-ab09-f0ea3c247648.png)
+# n8n-nodes-splitaudio
 
-# n8n-nodes-starter
+This is an n8n community node. It lets you split audio files into smaller chunks in your n8n workflows.
 
-This repo contains example nodes to help you get started building your own custom integrations for [n8n](n8n.io). It includes the node linter and other dependencies.
+The Split Audio node is a utility that lets you break large audio files into smaller segments of a specified size, which is useful for processing, analyzing, or uploading large audio files in manageable chunks.
 
-To make your custom node available to the community, you must create it as an npm package, and [submit it to the npm registry](https://docs.npmjs.com/packages-and-modules/contributing-packages-to-the-registry).
+[n8n](https://n8n.io/) is a [fair-code licensed](https://docs.n8n.io/reference/license/) workflow automation platform.
 
-## Prerequisites
+[Installation](#installation)  
+[Operations](#operations)  
+[Compatibility](#compatibility)  
+[Usage](#usage)  
+[Resources](#resources)  
 
-You need the following installed on your development machine:
+## Installation
 
-* [git](https://git-scm.com/downloads)
-* Node.js and pnpm. Minimum version Node 18. You can find instructions on how to install both using nvm (Node Version Manager) for Linux, Mac, and WSL [here](https://github.com/nvm-sh/nvm). For Windows users, refer to Microsoft's guide to [Install NodeJS on Windows](https://docs.microsoft.com/en-us/windows/dev-environment/javascript/nodejs-on-windows).
-* Install n8n with:
-  ```
-  pnpm install n8n -g
-  ```
-* Recommended: follow n8n's guide to [set up your development environment](https://docs.n8n.io/integrations/creating-nodes/build/node-development-environment/).
+Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes/installation/) in the n8n community nodes documentation.
 
-## Using this starter
+### Dependencies
 
-These are the basic steps for working with the starter. For detailed guidance on creating and publishing nodes, refer to the [documentation](https://docs.n8n.io/integrations/creating-nodes/).
+This node requires FFmpeg to be installed on your system. Please make sure FFmpeg is installed and available in your system's PATH.
 
-1. [Generate a new repository](https://github.com/n8n-io/n8n-nodes-starter/generate) from this template repository.
-2. Clone your new repo:
-   ```
-   git clone https://github.com/<your organization>/<your-repo-name>.git
-   ```
-3. Run `pnpm i` to install dependencies.
-4. Open the project in your editor.
-5. Browse the examples in `/nodes` and `/credentials`. Modify the examples, or replace them with your own nodes.
-6. Update the `package.json` to match your details.
-7. Run `pnpm lint` to check for errors or `pnpm lintfix` to automatically fix errors when possible.
-8. Test your node locally. Refer to [Run your node locally](https://docs.n8n.io/integrations/creating-nodes/test/run-node-locally/) for guidance.
-9. Replace this README with documentation for your node. Use the [README_TEMPLATE](README_TEMPLATE.md) to get started.
-10. Update the LICENSE file to use your details.
-11. [Publish](https://docs.npmjs.com/packages-and-modules/contributing-packages-to-the-registry) your package to npm.
+- For Windows: You can download FFmpeg from [their official website](https://ffmpeg.org/download.html) or install it via [Chocolatey](https://chocolatey.org/) with `choco install ffmpeg`
+- For macOS: You can install FFmpeg using Homebrew with `brew install ffmpeg`
+- For Linux: You can install FFmpeg using your distribution's package manager, e.g., `apt install ffmpeg` for Debian/Ubuntu
 
-## More information
+## Operations
 
-Refer to our [documentation on creating nodes](https://docs.n8n.io/integrations/creating-nodes/) for detailed information on building your own nodes.
+The Split Audio node supports the following operation:
+
+- **Split Audio**: Divides an audio file into multiple chunks of a specified size
+
+### Split Audio Options
+
+- **Input Type**: Choose between binary data or file path input
+- **Chunk Size**: Size of each audio chunk in MB
+- **Output Prefix**: Prefix for chunk filenames
+- **Output Format**: Format for output chunks (Same as Input, MP3, M4A, WAV)
+- **Memory Management**: Standard or Low Memory mode for handling large files
+- **Delete Original**: Option to delete the original file after processing (when using file path input)
+
+## Compatibility
+
+This node has been tested with n8n version 1.90.2 and above.
+
+## Usage
+
+### Basic Usage
+
+1. Add the Split Audio node to your workflow.
+2. Connect it to a node that provides an audio file (e.g., HTTP Request, Read Binary Files).
+3. Configure the chunk size and other parameters.
+4. The node will output multiple items, each containing a chunk of the original audio file.
+
+### Example with Binary Files
+
+1. Add a **Read/Write Files from Disk** node to read an audio file.
+2. Connect the **Split Audio** node after it.
+3. Set the Input Type to "Binary Data".
+4. Configure the chunk size (e.g., 10 MB).
+5. Run the workflow to split the audio file.
+
+You can also use any note that provides binary data as output, such as the **Google Drive** node or the **HTTP Request** node.
+
+### Example with File Path
+
+1. Add a **Read/Write Files from Disk** node to get the file path.
+2. Connect the **Split Audio** node after it.
+3. Set the Input Type to "File Path".
+4. Set the File Path Field to the expression "{{ $json.directory }}/{{ $json.fileName }}".
+5. Configure the chunk size and other options.
+6. Run the workflow to split the audio file.
+
+## Resources
+
+* [n8n community nodes documentation](https://docs.n8n.io/integrations/community-nodes/)
+* [n8n official website](https://n8n.io)
+* [FFmpeg documentation](https://ffmpeg.org/documentation.html)
 
 ## License
 

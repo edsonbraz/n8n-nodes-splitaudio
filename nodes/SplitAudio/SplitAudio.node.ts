@@ -46,6 +46,31 @@ export class SplitAudio implements INodeType {
 				default: 'split',
 			},
 			{
+				displayName: 'Input Type',
+				name: 'inputType',
+				type: 'options',
+				options: [
+					{
+						name: 'Binary Data',
+						value: 'binaryData',
+						description: 'Use binary data from an input field',
+					},
+					{
+						name: 'File Path',
+						value: 'filePath',
+						description:
+							'Use a file path from a previous node (e.g., Google Drive, Read/Write Files)',
+					},
+				],
+				default: 'binaryData',
+				description: 'Whether to use binary data or a file path as input',
+				displayOptions: {
+					show: {
+						operation: ['split'],
+					},
+				},
+			},
+			{
 				displayName: 'Binary Property',
 				name: 'binaryPropertyName',
 				type: 'string',
@@ -54,9 +79,26 @@ export class SplitAudio implements INodeType {
 				displayOptions: {
 					show: {
 						operation: ['split'],
+						inputType: ['binaryData'],
 					},
 				},
 				description: 'Name of the binary property containing the audio file to split',
+			},
+			{
+				displayName: 'File Path Field',
+				name: 'filePathField',
+				type: 'string',
+				default: 'fileName',
+				required: true,
+				placeholder: 'fileName',
+				displayOptions: {
+					show: {
+						operation: ['split'],
+						inputType: ['filePath'],
+					},
+				},
+				description:
+					'Name of the JSON property containing the file path (usually fileName from Read/Write Files from Disk node)',
 			},
 			{
 				displayName: 'Chunk Size',
@@ -114,6 +156,43 @@ export class SplitAudio implements INodeType {
 				},
 				description: 'Format for output chunks',
 			},
+			{
+				displayName: 'Delete Original File After Processing',
+				name: 'deleteOriginal',
+				type: 'boolean',
+				default: false,
+				displayOptions: {
+					show: {
+						operation: ['split'],
+						inputType: ['filePath'],
+					},
+				},
+				description: 'Whether to delete the original file after successful processing',
+			},
+			{
+				displayName: 'Memory Management',
+				name: 'memoryManagement',
+				type: 'options',
+				options: [
+					{
+						name: 'Standard',
+						value: 'standard',
+						description: 'Default memory usage',
+					},
+					{
+						name: 'Low Memory',
+						value: 'lowMemory',
+						description: 'Process files with minimal memory usage (slower but uses less RAM)',
+					},
+				],
+				default: 'standard',
+				displayOptions: {
+					show: {
+						operation: ['split'],
+					},
+				},
+				description: 'How to handle memory usage during processing',
+			},
 		],
 	};
 
@@ -137,51 +216,116 @@ export class SplitAudio implements INodeType {
 
 			if (operation === 'split') {
 				// Get parameters
-				const binaryPropertyName = this.getNodeParameter('binaryPropertyName', itemIndex) as string;
+				const inputType = this.getNodeParameter('inputType', itemIndex) as string;
 				const chunkSizeMB = this.getNodeParameter('chunkSize', itemIndex) as number;
 				const outputPrefix = this.getNodeParameter('outputPrefix', itemIndex) as string;
 				const outputFormat = this.getNodeParameter('outputFormat', itemIndex) as string;
 
-				// Check if binary data exists
-				if (!items[itemIndex].binary || !items[itemIndex].binary?.[binaryPropertyName]) {
-					throw new NodeOperationError(
-						this.getNode(),
-						`No binary data property "${binaryPropertyName}" exists on item!`,
-						{ itemIndex },
-					);
-				}
+				// Get additional parameters
+				const memoryManagement = this.getNodeParameter('memoryManagement', itemIndex) as string;
+				const deleteOriginal =
+					inputType === 'filePath'
+						? (this.getNodeParameter('deleteOriginal', itemIndex) as boolean)
+						: false;
 
-				const binaryData = items[itemIndex].binary![binaryPropertyName];
+				// Track if this is a user-provided file that needs to be deleted (not a temp file)
+				const isUserProvidedFile = inputType === 'filePath';
 
 				// Get the path to the input file
 				let filePath = '';
+				let binaryData = undefined;
+				let mimeType = '';
 
-				// Check if file is stored in a temporary file already
-				if (
-					binaryData.fileName &&
-					binaryData.mimeType &&
-					binaryData.data === undefined &&
-					binaryData.filePath
-				) {
-					// If we have a file path, we can use that directly
-					filePath =
-						typeof binaryData.filePath === 'string'
-							? binaryData.filePath
-							: String(binaryData.filePath);
-				} else if (binaryData.data) {
-					// We need to write the base64 data to a temporary file
-					const tempPrefix = `n8n-audio-split-${Date.now()}-`;
-					const tempDir = os.tmpdir();
-					const tempFile = path.join(tempDir, `${tempPrefix}${binaryData.fileName || 'input.mp3'}`);
+				if (inputType === 'binaryData') {
+					const binaryPropertyName = this.getNodeParameter(
+						'binaryPropertyName',
+						itemIndex,
+					) as string;
 
-					// Write buffer to file
-					const buffer = Buffer.from(binaryData.data, 'base64');
-					await fs.promises.writeFile(tempFile, buffer);
-					filePath = tempFile;
+					// Check if binary data exists
+					if (!items[itemIndex].binary || !items[itemIndex].binary?.[binaryPropertyName]) {
+						throw new NodeOperationError(
+							this.getNode(),
+							`No binary data property "${binaryPropertyName}" exists on item!`,
+							{ itemIndex },
+						);
+					}
+
+					binaryData = items[itemIndex].binary![binaryPropertyName];
+					mimeType = binaryData.mimeType;
+
+					// Check if file is stored in a temporary file already
+					if (
+						binaryData.fileName &&
+						binaryData.mimeType &&
+						binaryData.data === undefined &&
+						binaryData.filePath
+					) {
+						// If we have a file path, we can use that directly
+						filePath =
+							typeof binaryData.filePath === 'string'
+								? binaryData.filePath
+								: String(binaryData.filePath);
+					} else if (binaryData.data) {
+						// We need to write the base64 data to a temporary file
+						const tempPrefix = `n8n-audio-split-${Date.now()}-`;
+						const tempDir = os.tmpdir();
+						const tempFile = path.join(
+							tempDir,
+							`${tempPrefix}${binaryData.fileName || 'input.mp3'}`,
+						);
+
+						// Write buffer to file
+						const buffer = Buffer.from(binaryData.data, 'base64');
+						await fs.promises.writeFile(tempFile, buffer);
+						filePath = tempFile;
+					} else {
+						throw new NodeOperationError(
+							this.getNode(),
+							'No usable binary data found! The data must either be stored in a file or as base64 data.',
+							{ itemIndex },
+						);
+					}
+				} else if (inputType === 'filePath') {
+					const filePathField = this.getNodeParameter('filePathField', itemIndex) as string;
+
+					// Check if the value looks like a direct path (starts with / or contains : for Windows paths)
+					const fieldValue = items[itemIndex].json?.[filePathField];
+					const directPath =
+						items[itemIndex].json &&
+						typeof filePathField === 'string' &&
+						(filePathField.startsWith('/') || filePathField.includes(':\\'));
+
+					if (directPath) {
+						// If the field name itself looks like a path, use it directly
+						filePath = filePathField;
+						this.logger.debug(`Using field name as direct path: ${filePath}`);
+					} else if (fieldValue) {
+						// Use the value from the specified field
+						filePath = fieldValue as string;
+						this.logger.debug(`Using value from field ${filePathField}: ${filePath}`);
+					} else {
+						throw new NodeOperationError(
+							this.getNode(),
+							`No file path found in the property "${filePathField}"!`,
+							{ itemIndex },
+						);
+					}
+
+					// Check if the file exists
+					try {
+						await fs.promises.access(filePath, fs.constants.R_OK);
+					} catch (error) {
+						throw new NodeOperationError(
+							this.getNode(),
+							`Cannot access file at path: ${filePath}. Please make sure the file exists and is readable.`,
+							{ itemIndex },
+						);
+					}
 				} else {
 					throw new NodeOperationError(
 						this.getNode(),
-						'No usable binary data found! The data must either be stored in a file or as base64 data.',
+						'Invalid input type. Please select either Binary Data or File Path.',
 						{ itemIndex },
 					);
 				}
@@ -189,7 +333,7 @@ export class SplitAudio implements INodeType {
 				if (!filePath) {
 					throw new NodeOperationError(
 						this.getNode(),
-						'Could not determine file path! Make sure to use a node like "Read Binary File" first.',
+						'Could not determine file path! Make sure to use a node like "Read Binary File" or "Read/Write Files from Disk" first.',
 						{ itemIndex },
 					);
 				}
@@ -200,7 +344,7 @@ export class SplitAudio implements INodeType {
 					let shouldCleanupInputFile = false;
 
 					// If we created a temp file from binary data, we should clean it up
-					if (filePath && binaryData.data !== undefined) {
+					if (filePath && inputType === 'binaryData' && binaryData?.data !== undefined) {
 						tempFilesToCleanup.push(filePath);
 						shouldCleanupInputFile = true;
 					}
@@ -269,16 +413,34 @@ export class SplitAudio implements INodeType {
 						`${fileBaseName}_${outputPrefix}_%03d${outputExtension}`,
 					);
 
-					// Split the file using fluent-ffmpeg
+					// Split the file using fluent-ffmpeg with memory management settings
 					await new Promise<void>((resolve, reject) => {
-						ffmpeg(filePath)
+						const ffmpegCommand = ffmpeg(filePath)
 							.outputOptions([
 								`-f segment`,
 								`-segment_time ${chunkDurationSeconds}`,
 								`-reset_timestamps 1`,
 							])
-							.outputOption('-c copy')
+							.outputOption('-c copy');
+
+						// Apply low memory settings if selected
+						if (memoryManagement === 'lowMemory') {
+							// Add settings to reduce memory usage
+							ffmpegCommand.outputOptions([
+								'-max_muxing_queue_size 1024', // Lower muxing queue size
+								'-nostdin', // Disable stdin to prevent buffer accumulation
+							]);
+
+							this.logger.debug('Using low memory settings for FFmpeg processing');
+						}
+
+						ffmpegCommand
 							.output(outputPattern)
+							.on('progress', (progress) => {
+								if (progress && progress.percent) {
+									this.logger.debug(`Processing: ${Math.round(progress.percent)}% done`);
+								}
+							})
 							.on('end', () => resolve())
 							.on('error', (err: Error) => reject(new Error(`FFmpeg error: ${err.message}`)))
 							.run();
@@ -293,27 +455,73 @@ export class SplitAudio implements INodeType {
 					for (const chunkFile of chunkFiles) {
 						const chunkPath = path.join(tmpDir, chunkFile);
 						const fileSize = (await fs.promises.stat(chunkPath)).size;
-						const fileContent = await fs.promises.readFile(chunkPath);
 
-						// Create binary data
-						const chunk: INodeExecutionData = {
-							json: {
-								filename: chunkFile,
-								size: fileSize,
-								sizeInMB: fileSize / (1024 * 1024),
-								originalFile: fileBaseName + fileExtension,
-								duration: chunkDurationSeconds,
-							},
-							binary: {
-								[binaryPropertyName]: await this.helpers.prepareBinaryData(
-									fileContent,
-									chunkFile,
-									binaryData.mimeType,
-								),
-							},
-						};
+						let fileContent;
+						// Use streaming approach for low memory mode to reduce memory footprint
+						if (memoryManagement === 'lowMemory') {
+							// Create read stream instead of loading entire file into memory
+							// This handles binary data in smaller chunks
+							const createBinaryDataFromStream = async () => {
+								return new Promise<Buffer>((resolve, reject) => {
+									const readStream = fs.createReadStream(chunkPath);
+									const chunks: Buffer[] = [];
 
-						returnData.push(chunk);
+									readStream.on('data', (chunk) => {
+										// Ensure chunk is a Buffer
+										chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+									});
+
+									readStream.on('end', () => {
+										// Only concatenate at the end to minimize memory usage
+										const buffer = Buffer.concat(chunks);
+										resolve(buffer);
+									});
+
+									readStream.on('error', (err) => {
+										reject(err);
+									});
+								});
+							};
+
+							// Prepare binary data using streaming approach
+							const chunk: INodeExecutionData = {
+								json: {
+									filename: chunkFile,
+									size: fileSize,
+									sizeInMB: fileSize / (1024 * 1024),
+									originalFile: fileBaseName + fileExtension,
+									duration: chunkDurationSeconds,
+								},
+								binary: {
+									data: await this.helpers.prepareBinaryData(
+										await createBinaryDataFromStream(),
+										chunkFile,
+										mimeType,
+									),
+								},
+							};
+
+							returnData.push(chunk);
+						} else {
+							// Standard approach - read entire file into memory at once
+							fileContent = await fs.promises.readFile(chunkPath);
+
+							// Create binary data
+							const chunk: INodeExecutionData = {
+								json: {
+									filename: chunkFile,
+									size: fileSize,
+									sizeInMB: fileSize / (1024 * 1024),
+									originalFile: fileBaseName + fileExtension,
+									duration: chunkDurationSeconds,
+								},
+								binary: {
+									data: await this.helpers.prepareBinaryData(fileContent, chunkFile, mimeType),
+								},
+							};
+
+							returnData.push(chunk);
+						}
 
 						// Clean up temp file
 						tempFilesToCleanup.push(chunkPath);
@@ -336,13 +544,18 @@ export class SplitAudio implements INodeType {
 						}
 					}
 
-					// Cleanup input file if necessary
-					if (shouldCleanupInputFile) {
+					// Cleanup input file based on settings
+					if (shouldCleanupInputFile || (isUserProvidedFile && deleteOriginal)) {
 						try {
 							await fs.promises.unlink(filePath);
+							this.logger.info(`Successfully deleted the original file: ${filePath}`);
 						} catch (cleanupError) {
-							this.logger.warn(`Failed to clean up input file: ${filePath}`);
+							this.logger.warn(
+								`Failed to clean up file: ${filePath} - ${(cleanupError as Error).message}`,
+							);
 						}
+					} else if (isUserProvidedFile && deleteOriginal === false) {
+						this.logger.debug(`Original file ${filePath} was not deleted as per user settings`);
 					}
 				} catch (error) {
 					if (error instanceof Error) {

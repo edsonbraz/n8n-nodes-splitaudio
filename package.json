@@ -3,7 +3,8 @@
 	"version": "0.1.0",
 	"description": "A custom n8n node for splitting audio files into smaller segments.",
 	"keywords": [
-		"n8n-community-node-package"
+		"n8n-community-node-package",
+		"n8n-nodes-splitaudio"
 	],
 	"license": "MIT",
 	"homepage": "",
@@ -28,7 +29,7 @@
 		"format": "prettier nodes --write",
 		"lint": "eslint nodes package.json",
 		"lintfix": "eslint nodes package.json --fix",
-		"prepublishOnly": "pnpm build && pnpm lint -c .eslintrc.prepublish.js nodes credentials package.json"
+		"prepublishOnly": "pnpm build && pnpm lint -c .eslintrc.prepublish.js nodes package.json"
 	},
 	"files": [
 		"dist"

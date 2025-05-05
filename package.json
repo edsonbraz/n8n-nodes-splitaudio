@@ -1,6 +1,6 @@
 {
 	"name": "n8n-nodes-splitaudio",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "A custom n8n node for splitting audio files into smaller segments.",
 	"keywords": [
 		"n8n-community-node-package",
